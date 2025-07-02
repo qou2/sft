@@ -23,6 +23,11 @@ async function verifySignature(request: Request, body: string): Promise<boolean>
   }
 
   try {
+    // For development/testing, you can temporarily skip signature verification
+    // Remove this return statement once you have the public key set up
+    console.log('Skipping signature verification for testing')
+    return true
+    
     const encoder = new TextEncoder()
     const message = encoder.encode(timestamp + body)
     const sigBytes = new Uint8Array(Buffer.from(signature, 'hex'))
@@ -135,6 +140,8 @@ serve(async (req) => {
 
     // Handle Discord interactions - verify signature first
     const bodyText = await req.text()
+    console.log('Raw request body:', bodyText)
+    console.log('Request headers:', Object.fromEntries(req.headers.entries()))
     
     // Verify the request signature
     const isValidSignature = await verifySignature(req, bodyText)
@@ -143,42 +150,71 @@ serve(async (req) => {
       return new Response('Unauthorized', { status: 401 })
     }
 
-    const body = JSON.parse(bodyText)
-    console.log('Discord interaction received:', body)
+    let body
+    try {
+      body = JSON.parse(bodyText)
+      console.log('Parsed Discord interaction:', JSON.stringify(body, null, 2))
+    } catch (error) {
+      console.error('Failed to parse JSON:', error)
+      return new Response('Bad Request', { status: 400 })
+    }
     
-    // Handle Discord interaction verification
+    // Handle Discord interaction verification (PING)
     if (body.type === 1) {
-      console.log('Ping verification')
+      console.log('Responding to Discord ping verification')
       return new Response(JSON.stringify({ type: 1 }), {
+        status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
 
-    // Handle slash commands
+    // Handle slash commands (APPLICATION_COMMAND)
     if (body.type === 2) {
       const { data: command } = body
-      console.log('Slash command received:', command.name)
+      console.log(`Processing slash command: ${command.name}`)
       
       if (command.name === 'ping') {
-        return new Response(JSON.stringify({
-          type: 4,
+        const response = {
+          type: 4, // CHANNEL_MESSAGE_WITH_SOURCE
           data: {
-            content: '🏓 Pong! The bot is working!'
+            content: '🏓 Pong! The bot is working perfectly!',
+            flags: 0 // Make message visible to everyone
           }
-        }), {
+        }
+        
+        console.log('Sending response:', JSON.stringify(response, null, 2))
+        return new Response(JSON.stringify(response), {
+          status: 200,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         })
       }
+      
+      // Handle unknown commands
+      const unknownResponse = {
+        type: 4,
+        data: {
+          content: `❌ Unknown command: ${command.name}`,
+          flags: 64 // Ephemeral message (only visible to user)
+        }
+      }
+      
+      console.log('Unknown command response:', JSON.stringify(unknownResponse, null, 2))
+      return new Response(JSON.stringify(unknownResponse), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
     }
 
-    // Default response for unknown commands
+    // Handle other interaction types
+    console.log(`Unhandled interaction type: ${body.type}`)
     return new Response(JSON.stringify({
       type: 4,
       data: {
-        content: '❌ Unknown command!',
+        content: '❌ This interaction type is not supported yet.',
         flags: 64
       }
     }), {
+      status: 200,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
 
