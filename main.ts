@@ -1,8 +1,58 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
+import { crypto } from "https://deno.land/std@0.168.0/crypto/mod.ts"
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-signature-ed25519, x-signature-timestamp',
+}
+
+// Function to verify Discord signature
+async function verifySignature(request: Request, body: string): Promise<boolean> {
+  const PUBLIC_KEY = Deno.env.get('DISCORD_PUBLIC_KEY')
+  if (!PUBLIC_KEY) {
+    console.error('Missing DISCORD_PUBLIC_KEY')
+    return false
+  }
+
+  const signature = request.headers.get('x-signature-ed25519')
+  const timestamp = request.headers.get('x-signature-timestamp')
+  
+  if (!signature || !timestamp) {
+    console.error('Missing signature headers')
+    return false
+  }
+
+  try {
+    const encoder = new TextEncoder()
+    const message = encoder.encode(timestamp + body)
+    const sigBytes = new Uint8Array(Buffer.from(signature, 'hex'))
+    const keyBytes = new Uint8Array(Buffer.from(PUBLIC_KEY, 'hex'))
+    
+    // Import the public key
+    const key = await crypto.subtle.importKey(
+      'raw',
+      keyBytes,
+      {
+        name: 'Ed25519',
+        namedCurve: 'Ed25519',
+      },
+      false,
+      ['verify']
+    )
+    
+    // Verify the signature
+    const isValid = await crypto.subtle.verify(
+      'Ed25519',
+      key,
+      sigBytes,
+      message
+    )
+    
+    return isValid
+  } catch (error) {
+    console.error('Signature verification error:', error)
+    return false
+  }
 }
 
 serve(async (req) => {
@@ -15,18 +65,21 @@ serve(async (req) => {
   try {
     const DISCORD_BOT_TOKEN = Deno.env.get('DISCORD_BOT_TOKEN')
     const DISCORD_APPLICATION_ID = Deno.env.get('DISCORD_APPLICATION_ID')
+    const DISCORD_PUBLIC_KEY = Deno.env.get('DISCORD_PUBLIC_KEY')
     
     console.log('Environment check:', {
       hasToken: !!DISCORD_BOT_TOKEN,
-      hasAppId: !!DISCORD_APPLICATION_ID
+      hasAppId: !!DISCORD_APPLICATION_ID,
+      hasPublicKey: !!DISCORD_PUBLIC_KEY
     })
     
-    if (!DISCORD_BOT_TOKEN || !DISCORD_APPLICATION_ID) {
+    if (!DISCORD_BOT_TOKEN || !DISCORD_APPLICATION_ID || !DISCORD_PUBLIC_KEY) {
       console.error('Missing Discord credentials')
       return new Response(JSON.stringify({
-        error: 'Missing Discord bot credentials',
+        error: 'Missing Discord credentials',
         hasToken: !!DISCORD_BOT_TOKEN,
-        hasAppId: !!DISCORD_APPLICATION_ID
+        hasAppId: !!DISCORD_APPLICATION_ID,
+        hasPublicKey: !!DISCORD_PUBLIC_KEY
       }), {
         status: 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -36,7 +89,7 @@ serve(async (req) => {
     const url = new URL(req.url)
     
     // Route for registering slash commands
-    if (url.pathname === '/register-commands' || req.method === 'GET') {
+    if (url.pathname === '/register-commands' || (req.method === 'GET' && url.pathname !== '/')) {
       console.log('Registering command...')
       
       const command = {
@@ -80,8 +133,17 @@ serve(async (req) => {
       })
     }
 
-    // Handle Discord interactions
-    const body = await req.json()
+    // Handle Discord interactions - verify signature first
+    const bodyText = await req.text()
+    
+    // Verify the request signature
+    const isValidSignature = await verifySignature(req, bodyText)
+    if (!isValidSignature) {
+      console.error('Invalid signature')
+      return new Response('Unauthorized', { status: 401 })
+    }
+
+    const body = JSON.parse(bodyText)
     console.log('Discord interaction received:', body)
     
     // Handle Discord interaction verification
@@ -109,7 +171,7 @@ serve(async (req) => {
       }
     }
 
-    // Default response
+    // Default response for unknown commands
     return new Response(JSON.stringify({
       type: 4,
       data: {
