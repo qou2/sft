@@ -39,9 +39,21 @@ serve(async (req) => {
 
     const url = new URL(req.url)
     
-    // Route for registering slash commands
-    if (url.pathname === '/register-commands' || (req.method === 'GET' && url.pathname !== '/')) {
-      console.log('=== REGISTERING COMMAND ===')
+    // Handle browser requests vs Discord interactions
+    const userAgent = req.headers.get('user-agent') || ''
+    const isDiscordRequest = userAgent.includes('Discord-Interactions') || req.headers.has('x-signature-ed25519')
+    const contentType = req.headers.get('content-type') || ''
+    
+    console.log('Request analysis:', {
+      userAgent,
+      isDiscordRequest,
+      contentType,
+      hasSignature: req.headers.has('x-signature-ed25519')
+    })
+
+    // Route for registering slash commands (browser/manual requests)
+    if (url.pathname === '/register-commands' || (!isDiscordRequest && req.method === 'GET')) {
+      console.log('=== BROWSER REQUEST - REGISTERING COMMAND ===')
       
       const command = {
         name: 'ping',
@@ -78,7 +90,23 @@ serve(async (req) => {
       return new Response(JSON.stringify({
         success: true,
         message: 'Simple ping command registered successfully!',
-        command: result
+        command: result,
+        note: 'Now try using /ping in your Discord server!'
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Only handle Discord interactions if this looks like a Discord request
+    if (!isDiscordRequest) {
+      console.log('=== NON-DISCORD REQUEST ===')
+      return new Response(JSON.stringify({
+        message: 'Discord Bot Endpoint',
+        status: 'Running',
+        endpoints: {
+          '/register-commands': 'Register slash commands',
+          '/': 'Discord interactions endpoint'
+        }
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
